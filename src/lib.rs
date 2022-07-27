@@ -109,13 +109,97 @@ struct Camera {
     zfar: f32,
 }
 
-impl Camera{
+impl Camera {
     fn build_view_projection_matrix(&self) -> cgmath::Matrix4<f32> {
-        let view = cgmath::Matrix4::look_at_rh(self.eye,self.target, self.up);
+        let view = cgmath::Matrix4::look_at_rh(self.eye, self.target, self.up);
 
         let proj = cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.znear, self.zfar);
 
         return OPENGL_TO_WGPU_MATRIX * proj * view;
+    }
+}
+
+struct CameraController {
+    speed: f32,
+    is_forward_pressed: bool,
+    is_backward_pressed: bool,
+    is_left_pressed: bool,
+    is_right_pressed: bool,
+}
+
+impl CameraController {
+    fn new(speed: f32) -> Self {
+        Self {
+            speed: speed,
+            is_forward_pressed: false,
+            is_backward_pressed: false,
+            is_left_pressed: false,
+            is_right_pressed: false,
+        }
+    }
+
+    fn process_events(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput {
+                input:
+                    KeyboardInput {
+                        state,
+                        virtual_keycode: Some(keycode),
+                        ..
+                    },
+                ..
+            } => {
+                let is_pressed = *state == ElementState::Pressed;
+                match keycode {
+                    VirtualKeyCode::W | VirtualKeyCode::Up => {
+                        self.is_forward_pressed = is_pressed;
+                        true
+                    }
+                    VirtualKeyCode::A | VirtualKeyCode::Left => {
+                        self.is_left_pressed = is_pressed;
+                        true
+                    }
+                    VirtualKeyCode::D | VirtualKeyCode::Right => {
+                        self.is_right_pressed = is_pressed;
+                        true
+                    }
+                    VirtualKeyCode::S | VirtualKeyCode::Down => {
+                        self.is_backward_pressed = is_pressed;
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn update_camera(&self, camera: &mut Camera){
+        use cgmath::InnerSpace;
+
+        let forward = camera.target - camera.eye;
+        let forward_norm = forward.normalize();
+        let forward_mag = forward.magnitude();
+
+        if self.is_forward_pressed && forward_mag > self.speed{
+            camera.eye += forward_norm * self.speed;
+        }
+
+        if self.is_backward_pressed{
+            camera.eye -= forward_norm * self.speed;
+        }
+
+        let right = forward_norm.cross(camera.up);
+
+        let forward = camera.target - camera.eye;
+        let forward_mag = forward.magnitude();
+
+        if self.is_right_pressed{
+            camera.eye = camera.target-(forward + right * self.speed).normalize() * forward_mag;
+        }
+        if self.is_left_pressed {
+            camera.eye = camera.target - (forward - right * self.speed).normalize() * forward_mag;
+        }
     }
 }
 
@@ -131,10 +215,11 @@ struct State {
     num_indices: u32,
     diffuse_bind_group: wgpu::BindGroup,
     diffuse_texture: texture::Texture,
-    camera : Camera,
-    camera_unifrom : CameraUnifrom,
-    camera_buffer : wgpu::Buffer,
-    camera_bind_group : wgpu::BindGroup,
+    camera: Camera,
+    camera_uniform: CameraUnifrom,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
+    camera_controller: CameraController,
     ////////////////////////////////////////////////
     diffuse_texture_changed: texture::Texture,
     is_changed: bool,
@@ -190,7 +275,8 @@ impl State {
         let diffuse_texture =
             texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "happy-tree.png").unwrap();
         let diffuse_bytes = include_bytes!("./resource/cat.png");
-        let diffuse_texture_changed = texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "cat.png").unwrap();
+        let diffuse_texture_changed =
+            texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "cat.png").unwrap();
 
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -215,30 +301,25 @@ impl State {
                 label: Some("texture_bind_group_layout"),
             });
 
-            
-        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-            entries: &[
-                wgpu::BindGroupLayoutEntry{
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer{
+                    ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
                     count: None,
-                }
-            ],
-            label : Some("camera_bind_group_layout"),
-        });
+                }],
+                label: Some("camera_bind_group_layout"),
+            });
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[
-                    &texture_bind_group_layout,
-                    &camera_bind_group_layout,
-                    ],
+                bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -310,36 +391,35 @@ impl State {
             label: Some("diffuse_bind_group"),
         });
 
-        let camera = Camera{
-            eye: (0.0,1.0,2.0).into(),
-            target : (0.0,0.0,0.0).into(),
+        let camera = Camera {
+            eye: (0.0, 1.0, 2.0).into(),
+            target: (0.0, 0.0, 0.0).into(),
             up: cgmath::Vector3::unit_y(),
-            aspect: config.width as f32,
+            aspect: config.width as f32 / config.height as f32,
             fovy: 45.0,
-            znear : 0.1,
-            zfar : 100.0,
+            znear: 0.1,
+            zfar: 100.0,
         };
 
-        let mut camera_unifrom = CameraUnifrom::new();
-        camera_unifrom.update_view_proj(&camera);
+        let mut camera_uniform = CameraUnifrom::new();
+        camera_uniform.update_view_proj(&camera);
 
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
-            contents : bytemuck::cast_slice(&[camera_unifrom]),
-            usage : wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor{
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &camera_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry{
-                    binding: 0,
-                    resource : camera_buffer.as_entire_binding(),
-                }
-            ],
-            label : Some("camera_bind_group"),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+            label: Some("camera_bind_group"),
         });
+
+        let camera_controller = CameraController::new(0.2);
 
         let is_changed = false;
 
@@ -357,8 +437,9 @@ impl State {
             diffuse_texture,
             camera,
             camera_buffer,
-            camera_unifrom,
+            camera_uniform,
             camera_bind_group,
+            camera_controller,
             diffuse_texture_changed,
             is_changed,
         }
@@ -374,6 +455,7 @@ impl State {
     }
 
     fn input(&mut self, _event: &WindowEvent) -> bool {
+        self.camera_controller.process_events(_event);
         match _event {
             WindowEvent::KeyboardInput {
                 input:
@@ -385,63 +467,69 @@ impl State {
                 ..
             } => {
                 let current_tex;
-                if self.is_changed
-                {
+                if self.is_changed {
                     current_tex = &self.diffuse_texture;
                     self.is_changed = false;
-                }
-                else 
-                {
+                } else {
                     current_tex = &self.diffuse_texture_changed;
                     self.is_changed = true;
                 }
                 let texture_bind_group_layout =
-                self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    self.device
+                        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                            entries: &[
+                                wgpu::BindGroupLayoutEntry {
+                                    binding: 0,
+                                    visibility: wgpu::ShaderStages::FRAGMENT,
+                                    ty: wgpu::BindingType::Texture {
+                                        multisampled: false,
+                                        view_dimension: wgpu::TextureViewDimension::D2,
+                                        sample_type: wgpu::TextureSampleType::Float {
+                                            filterable: true,
+                                        },
+                                    },
+                                    count: None,
+                                },
+                                wgpu::BindGroupLayoutEntry {
+                                    binding: 1,
+                                    visibility: wgpu::ShaderStages::FRAGMENT,
+                                    ty: wgpu::BindingType::Sampler(
+                                        wgpu::SamplerBindingType::Filtering,
+                                    ),
+                                    count: None,
+                                },
+                            ],
+                            label: Some("texture_bind_group_layout"),
+                        });
+
+                let diffuse_bind_group =
+                    self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("diffuse_bind_group"),
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&current_tex.view),
                             },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                            count: None,
-                        },
-                    ],
-                    label: Some("texture_bind_group_layout"),
-                });
-                
-                let diffuse_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor{
-                    label: Some("diffuse_bind_group"),
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&current_tex.view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&&current_tex.sampler),
-                        },
-                    ],
-                    layout : &texture_bind_group_layout
-                });
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&&current_tex.sampler),
+                            },
+                        ],
+                        layout: &texture_bind_group_layout,
+                    });
 
                 self.diffuse_bind_group = diffuse_bind_group;
-
             }
             _ => {}
         }
         false
     }
 
-    fn update(&mut self) {}
+    fn update(&mut self) {
+        self.camera_controller.update_camera(&mut self.camera);
+        self.camera_uniform.update_view_proj(&self.camera);
+        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+    }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -538,23 +626,21 @@ impl Vertex {
 
 //carmera uniform
 #[repr(C)]
-#[derive(Debug,Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 
-struct CameraUnifrom{
-    view_proj : [[f32; 4];4],
+struct CameraUnifrom {
+    view_proj: [[f32; 4]; 4],
 }
 
-impl CameraUnifrom{
-    fn new() -> Self{
+impl CameraUnifrom {
+    fn new() -> Self {
         use cgmath::SquareMatrix;
-        Self{
-            view_proj: cgmath::Matrix4::identity().into()
+        Self {
+            view_proj: cgmath::Matrix4::identity().into(),
         }
     }
 
-    fn update_view_proj(&mut self, camera: &Camera){
+    fn update_view_proj(&mut self, camera: &Camera) {
         self.view_proj = camera.build_view_projection_matrix().into();
     }
-
-
 }
