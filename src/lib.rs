@@ -1,4 +1,4 @@
-use wgpu::{util::DeviceExt, VertexBufferLayout};
+use wgpu::util::DeviceExt;
 
 use winit::{
     event::*,
@@ -7,9 +7,11 @@ use winit::{
     window::WindowBuilder,
 };
 
-use cgmath::{prelude::*, Quaternion};
+use cgmath::prelude::*;
 
 mod texture;
+
+mod resources;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -20,6 +22,65 @@ const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(
     0.0,
     NUM_INSTANCES_PER_ROW as f32 * 0.5,
 );
+
+//carmera uniform
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+
+struct CameraUnifrom {
+    view_proj: [[f32; 4]; 4],
+}
+
+impl CameraUnifrom {
+    fn new() -> Self {
+        Self {
+            view_proj: cgmath::Matrix4::identity().into(),
+        }
+    }
+
+    fn update_view_proj(&mut self, camera: &Camera) {
+        self.view_proj = camera.build_view_projection_matrix().into();
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct InstanceRaw {
+    model: [[f32; 4]; 4],
+}
+
+impl InstanceRaw {
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        use std::mem;
+
+        wgpu::VertexBufferLayout {
+            array_stride: mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 12]>() as wgpu::BufferAddress,
+                    shader_location: 8,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
 pub async fn run() {
@@ -184,7 +245,6 @@ impl CameraController {
     }
 
     fn update_camera(&self, camera: &mut Camera) {
-        use cgmath::InnerSpace;
 
         let forward = camera.target - camera.eye;
         let forward_norm = forward.normalize();
@@ -247,13 +307,16 @@ struct State {
     instance: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
     depth_texture: texture::Texture,
+    obj_model: model::Model,
     ////////////////////////////////////////////////
     diffuse_texture_changed: texture::Texture,
     is_changed: bool,
 }
-
+mod model;
+use model::{DrawModel, Vertex};
 impl State {
     // Creating some of the wgpu types requires async code
+
     async fn new(window: &Window) -> Self {
         let size = window.inner_size();
         // The instance is a handle to our GPU
@@ -298,10 +361,10 @@ impl State {
 
         surface.configure(&device, &config);
 
-        let diffuse_bytes = include_bytes!("./resource/happy-tree.png");
+        let diffuse_bytes = include_bytes!("../resource/happy-tree.png");
         let diffuse_texture =
             texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "happy-tree.png").unwrap();
-        let diffuse_bytes = include_bytes!("./resource/cat.png");
+        let diffuse_bytes = include_bytes!("../resource/cat.png");
         let diffuse_texture_changed =
             texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "cat.png").unwrap();
 
@@ -359,7 +422,7 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Vertex::desc(), InstanceRaw::desc()],
+                buffers: &[model::ModelVertex::desc(), InstanceRaw::desc()],
             },
 
             fragment: Some(wgpu::FragmentState {
@@ -410,7 +473,7 @@ impl State {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let num_indices = INDICES.len() as u32;
+        let num_indices = 0;
 
         let diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &texture_bind_group_layout,
@@ -457,14 +520,13 @@ impl State {
 
         let camera_controller = CameraController::new(0.2);
 
-        let instance = (0..NUM_INSTANCES_PER_ROW)
+        let instances = (0..NUM_INSTANCES_PER_ROW)
             .flat_map(|z| {
                 (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                    let position = cgmath::Vector3 {
-                        x: x as f32,
-                        y: 0.0,
-                        z: z as f32,
-                    } - INSTANCE_DISPLACEMENT;
+                    let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+                    let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+
+                    let position = cgmath::Vector3{x,y:0.0,z};
 
                     let rotation = if position.is_zero() {
                         cgmath::Quaternion::from_axis_angle(
@@ -480,7 +542,7 @@ impl State {
             })
             .collect::<Vec<_>>();
 
-        let instance_data = instance.iter().map(Instance::to_raw).collect::<Vec<_>>();
+        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Instance Buffer"),
             contents: bytemuck::cast_slice(&instance_data),
@@ -488,6 +550,39 @@ impl State {
         });
 
         let is_changed = false;
+
+        let obj_model = resources::load_model(
+            "cube.obj",
+            &device,
+            &queue,
+            &texture_bind_group_layout,
+        )
+        .await
+        .unwrap();
+
+        const SPACE_BETWEEN: f32 = 3.0;
+
+        let instance = (0..NUM_INSTANCES_PER_ROW)
+            .flat_map(|z| {
+                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                    let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+                    let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+
+                    let position = cgmath::Vector3 { x, y: 0.0, z };
+
+                    let rotation = if position.is_zero() {
+                        cgmath::Quaternion::from_axis_angle(
+                            cgmath::Vector3::unit_z(),
+                            cgmath::Deg(0.0),
+                        )
+                    } else {
+                        cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
+                    };
+
+                    Instance { position, rotation }
+                })
+            })
+            .collect::<Vec<_>>();
 
         Self {
             surface,
@@ -511,6 +606,7 @@ impl State {
             depth_texture,
             diffuse_texture_changed,
             is_changed,
+            obj_model,
         }
     }
 
@@ -643,15 +739,17 @@ impl State {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
+            // render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
+            // render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
+            // render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
 
-            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            // render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+            // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            //render_pass.draw(0..self.num_vertices,0..1);
+            //render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instance.len() as _);
 
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            //render_pass.draw(0..self.num_vertices,0..1);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instance.len() as _);
+            render_pass.draw_model_instanced(&self.obj_model, 0..self.instance.len() as u32, &self.camera_bind_group);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -661,33 +759,31 @@ impl State {
     }
 }
 
-//vertex
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
+struct Vertex3D {
     position: [f32; 3],
     tex_coords: [f32; 2],
 }
 
-const VERTICES: &[Vertex] = &[
-    Vertex {
+const VERTICES: &[Vertex3D] = &[
+    Vertex3D {
         position: [-0.0868241, 0.49240386, 0.0],
         tex_coords: [0.4131759, 1.0 - 0.99240386],
     }, // A
-    Vertex {
+    Vertex3D {
         position: [-0.49513406, 0.06958647, 0.0],
         tex_coords: [0.0048659444, 1.0 - 0.56958647],
     }, // B
-    Vertex {
+    Vertex3D {
         position: [-0.21918549, -0.44939706, 0.0],
         tex_coords: [0.28081453, 1.0 - 0.05060294],
     }, // C
-    Vertex {
+    Vertex3D {
         position: [0.35966998, -0.3473291, 0.0],
         tex_coords: [0.85967, 1.0 - 0.1526709],
     }, // D
-    Vertex {
+    Vertex3D {
         position: [0.44147372, 0.2347359, 0.0],
         tex_coords: [0.9414737, 1.0 - 0.7347359],
     }, // E
@@ -695,75 +791,15 @@ const VERTICES: &[Vertex] = &[
 
 const INDICES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
 
-impl Vertex {
+impl Vertex3D {
     const ATTRIBS: [wgpu::VertexAttribute; 2] =
         wgpu::vertex_attr_array![0=> Float32x3, 1=>Float32x2];
 
     fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            array_stride: std::mem::size_of::<Vertex3D>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &Self::ATTRIBS,
-        }
-    }
-}
-
-//carmera uniform
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-
-struct CameraUnifrom {
-    view_proj: [[f32; 4]; 4],
-}
-
-impl CameraUnifrom {
-    fn new() -> Self {
-        use cgmath::SquareMatrix;
-        Self {
-            view_proj: cgmath::Matrix4::identity().into(),
-        }
-    }
-
-    fn update_view_proj(&mut self, camera: &Camera) {
-        self.view_proj = camera.build_view_projection_matrix().into();
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct InstanceRaw {
-    model: [[f32; 4]; 4],
-}
-
-impl InstanceRaw {
-    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
-        use std::mem;
-
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 5,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
-                    shader_location: 6,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
-                    shader_location: 7,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 12]>() as wgpu::BufferAddress,
-                    shader_location: 8,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-            ],
         }
     }
 }
