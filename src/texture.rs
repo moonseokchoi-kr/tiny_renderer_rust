@@ -1,6 +1,5 @@
 use anyhow::*;
 use image::GenericImageView;
-use log::Level;
 
 pub struct Texture {
     pub texture: wgpu::Texture,
