@@ -25,17 +25,20 @@ const NUM_INSTANCES_PER_ROW: u32 = 10;
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 
 struct CameraUnifrom {
+    view_position : [f32; 4],
     view_proj: [[f32; 4]; 4],
 }
 
 impl CameraUnifrom {
     fn new() -> Self {
         Self {
+            view_position : [0.0; 4],
             view_proj: cgmath::Matrix4::identity().into(),
         }
     }
 
     fn update_view_proj(&mut self, camera: &Camera) {
+        self.view_position = camera.eye.to_homogeneous().into();
         self.view_proj = camera.build_view_projection_matrix().into();
     }
 }
@@ -414,7 +417,7 @@ impl State {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -422,7 +425,7 @@ impl State {
                     },
                     count: None,
                 }],
-                label: Some("camera_bind_group_layout"),
+                label: None,
             });
         let light_uniform = LightUniform {
             position: [2.0, 2.0, 2.0],
