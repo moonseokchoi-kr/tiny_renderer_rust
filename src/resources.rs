@@ -12,11 +12,12 @@ fn format_url(file_name: &str) -> reqwest::Url {
     let base = reqwest::Url::parse(&format!(
         "{}/{}/",
         location.origin().unwrap(),
-        option_env!("RES_PATH").unwrap_or("res"),
-    ))
-    .unwrap();
+        option_env!("RES_PATH").unwrap_or("resource/cube/"),
+    )).unwrap();
+    log::debug!("{}",base);
     base.join(file_name).unwrap()
 }
+
 
 pub async fn load_string(file_name: &str) -> anyhow::Result<String> {
     cfg_if! {

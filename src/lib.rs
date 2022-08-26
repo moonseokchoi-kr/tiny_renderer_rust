@@ -11,10 +11,10 @@ use cgmath::prelude::*;
 
 use std::collections::HashMap;
 
-mod texture;
-mod resources;
 mod camera;
 mod model;
+mod resources;
+mod texture;
 use model::{DrawModel, Vertex};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -40,7 +40,7 @@ impl CameraUnifrom {
 
     fn update_view_proj(&mut self, camera: &camera::Camera, projection: &camera::Projection) {
         self.view_position = camera.position.to_homogeneous().into();
-        self.view_proj = (projection.calc_matrix()* camera.calc_matrix()).into();
+        self.view_proj = (projection.calc_matrix() * camera.calc_matrix()).into();
     }
 }
 
@@ -110,88 +110,97 @@ pub async fn run() {
         }
     }
     let event_loop = EventLoop::new();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
-
-    let mut state = State::new(&window).await;
-    let mut last_render_time = instant::Instant::now();
-    event_loop.run(move |_event, _, control_flow| {    *control_flow = ControlFlow::Poll;
-        
-        match _event {
-            Event::DeviceEvent { 
-                event: DeviceEvent::MouseMotion{ delta, },
-            ..}
-            =>
-            if state.mouse_pressed{
-                state.camera_controller.process_mouse(delta.0, delta.1);
-            }
-        Event::WindowEvent {
-            ref event,
-            window_id,
-        } if window_id == window.id() => {
-            if !state.input(event) {
-                match event {
-                    #[cfg(not(target_arch="wasm32"))]
-                    WindowEvent::CloseRequested
-                    | WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                state: ElementState::Pressed,
-                                virtual_keycode: Some(VirtualKeyCode::Escape),
-                                ..
-                            },
-                        ..
-                    } => *control_flow = ControlFlow::Exit,
-                    WindowEvent::Resized(physical_size) => {
-                        state.resize(*physical_size);
-                    }
-                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                        state.resize(**new_inner_size);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        Event::RedrawRequested(window_id) if window_id == window.id() => {
-            let now = instant::Instant::now();
-            let dt = now - last_render_time;
-            last_render_time = now;
-
-            state.update(dt);
-            
-            match state.render() {
-                Ok(_) => {}
-
-                Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
-                Err(e) => eprintln!("{:?}", e),
-            }
-        }
-        Event::MainEventsCleared => {
-            window.request_redraw();
-        }
-        _ => {}
-    }
-});
+    let title = env!("CARGO_PKG_NAME");
+    let window = WindowBuilder::new().with_title(title).build(&event_loop).unwrap();
 
     #[cfg(target_arch = "wasm32")]
     {
+        use log::debug;
+        use log::info;
         // Winit prevents sizing with CSS, so we have to set
         // the size manually when on web.
         use winit::dpi::PhysicalSize;
-        window.set_inner_size(PhysicalSize::new(450, 400));
+        window.set_inner_size(PhysicalSize::new(450.0_f64, 400.0_f64));
 
         use winit::platform::web::WindowExtWebSys;
         web_sys::window()
             .and_then(|win| win.document())
             .and_then(|doc| {
-                let dst = doc.get_element_by_id("wasm-example")?;
+                let dst = doc.get_element_by_id("renderer_rust")?;
                 let canvas = web_sys::Element::from(window.canvas());
                 dst.append_child(&canvas).ok()?;
+                debug!("Hello World!");
+                info!("{}",dst.to_string());
                 Some(())
             })
             .expect("Couldn't append canvas to document body.");
     }
+
+    let mut state = State::new(&window).await;
+    let mut last_render_time = instant::Instant::now();
+    event_loop.run(move |_event, _, control_flow| {
+        *control_flow = ControlFlow::Poll;
+
+        match _event {
+            Event::DeviceEvent {
+                event: DeviceEvent::MouseMotion { delta },
+                ..
+            } => {
+                if state.mouse_pressed {
+                    state.camera_controller.process_mouse(delta.0, delta.1);
+                }
+            }
+            Event::WindowEvent {
+                ref event,
+                window_id,
+            } if window_id == window.id() => {
+                if !state.input(event) {
+                    match event {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        WindowEvent::CloseRequested
+                        | WindowEvent::KeyboardInput {
+                            input:
+                                KeyboardInput {
+                                    state: ElementState::Pressed,
+                                    virtual_keycode: Some(VirtualKeyCode::Escape),
+                                    ..
+                                },
+                            ..
+                        } => *control_flow = ControlFlow::Exit,
+                        WindowEvent::Resized(physical_size) => {
+                            state.resize(*physical_size);
+                        }
+                        WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                            state.resize(**new_inner_size);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            Event::RedrawRequested(window_id) if window_id == window.id() => {
+                let now = instant::Instant::now();
+                let dt = now - last_render_time;
+                last_render_time = now;
+
+                state.update(dt);
+
+                match state.render() {
+                    Ok(_) => {}
+
+                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                    Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
+                    Err(e) => eprintln!("{:?}", e),
+                }
+            }
+            Event::MainEventsCleared => {
+                window.request_redraw();
+            }
+            _ => {}
+        }
+    });
+
+
 }
 
 #[rustfmt::skip]
@@ -235,7 +244,7 @@ struct State {
     render_pipeline_map: HashMap<String, wgpu::RenderPipeline>,
     camera: camera::Camera,
     projection: camera::Projection,
-    camera_controller : camera::CameraController,
+    camera_controller: camera::CameraController,
     camera_uniform: CameraUnifrom,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -253,7 +262,6 @@ struct State {
 }
 
 impl State {
-
     // Creating some of the wgpu types requires async code
     async fn new(window: &Window) -> Self {
         let size = window.inner_size();
@@ -467,12 +475,12 @@ impl State {
         render_pipeline_map.insert(String::from("light_pipeline"), light_render_pipeline);
 
         let camera = camera::Camera::new((0.0, 5.0, 10.0), cgmath::Deg(-90.0), cgmath::Deg(-20.0));
-        let projection = camera::Projection::new(config.width, config.height, cgmath::Deg(45.0), 0.1, 100.0);
-        let camera_controller = camera::CameraController::new(4.0,0.4);
-
+        let projection =
+            camera::Projection::new(config.width, config.height, cgmath::Deg(45.0), 0.1, 100.0);
+        let camera_controller = camera::CameraController::new(4.0, 0.4);
 
         let mut camera_uniform = CameraUnifrom::new();
-        camera_uniform.update_view_proj(&camera,&projection);
+        camera_uniform.update_view_proj(&camera, &projection);
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
@@ -566,22 +574,21 @@ impl State {
             obj_model,
             light_buffer,
             light_uniform,
-            light_bind_group,  
+            light_bind_group,
             debug_material,
             mouse_pressed: false,
         }
     }
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        
-        self.projection.resize(new_size.width, new_size.height);
-        self.depth_texture =
-            texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
         if new_size.width > 0 && new_size.height > 0 {
+            self.projection.resize(new_size.width, new_size.height);
             self.size = new_size;
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+            self.depth_texture =
+                texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
         }
     }
 
@@ -614,7 +621,8 @@ impl State {
 
     fn update(&mut self, dt: instant::Duration) {
         self.camera_controller.update_camera(&mut self.camera, dt);
-        self.camera_uniform.update_view_proj(&self.camera, &self.projection);
+        self.camera_uniform
+            .update_view_proj(&self.camera, &self.projection);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
